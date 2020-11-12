@@ -3,6 +3,7 @@
 cc_library_shared {
     name: "libmemtrack",
     vendor_available: true,
+    product_available: true,
     vndk: {
         enabled: true,
     },
