@@ -14,14 +14,18 @@
  * limitations under the License.
  */
 #define LOG_TAG "memtrack"
+
+#include <aidl/android/hardware/memtrack/IMemtrack.h>
+#include <aidl/android/hardware/memtrack/MemtrackType.h>
+#include <android/binder_manager.h>
 #include <android/hardware/memtrack/1.0/IMemtrack.h>
 #include <memtrack/memtrack.h>
 
 #include <errno.h>
 #include <malloc.h>
-#include <vector>
 #include <string.h>
 #include <mutex>
+#include <vector>
 
 #include <log/log.h>
 
@@ -32,6 +36,41 @@ using android::hardware::memtrack::V1_0::MemtrackFlag;
 using android::hardware::memtrack::V1_0::MemtrackStatus;
 using android::hardware::hidl_vec;
 using android::hardware::Return;
+
+namespace V1_0 = android::hardware::memtrack::V1_0;
+namespace V_aidl = aidl::android::hardware::memtrack;
+
+// Check Memtrack Flags
+static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SMAPS_ACCOUNTED) ==
+              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SMAPS_ACCOUNTED));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SMAPS_UNACCOUNTED) ==
+              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SMAPS_UNACCOUNTED));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SHARED) ==
+              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SHARED));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SHARED_PSS) ==
+              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SHARED_PSS));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::PRIVATE) ==
+              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_PRIVATE));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SYSTEM) ==
+              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SYSTEM));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::DEDICATED) ==
+              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_DEDICATED));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::NONSECURE) ==
+              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_NONSECURE));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SECURE) ==
+              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SECURE));
+
+// Check Memtrack Types
+static_assert(static_cast<uint32_t>(V1_0::MemtrackType::OTHER) ==
+              static_cast<uint32_t>(V_aidl::MemtrackType::OTHER));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackType::GL) ==
+              static_cast<uint32_t>(V_aidl::MemtrackType::GL));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackType::GRAPHICS) ==
+              static_cast<uint32_t>(V_aidl::MemtrackType::GRAPHICS));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackType::MULTIMEDIA) ==
+              static_cast<uint32_t>(V_aidl::MemtrackType::MULTIMEDIA));
+static_assert(static_cast<uint32_t>(V1_0::MemtrackType::CAMERA) ==
+              static_cast<uint32_t>(V_aidl::MemtrackType::CAMERA));
 
 struct memtrack_proc_type {
     MemtrackType type;
@@ -44,7 +83,7 @@ struct memtrack_proc {
 };
 
 //TODO(b/31632518)
-static android::sp<IMemtrack> get_instance() {
+static android::sp<V1_0::IMemtrack> get_hidl_instance() {
     static android::sp<IMemtrack> module = IMemtrack::getService();
     static bool logged = false;
     if (module == nullptr && !logged) {
@@ -52,6 +91,14 @@ static android::sp<IMemtrack> get_instance() {
         ALOGE("Couldn't load memtrack module");
     }
     return module;
+}
+
+
+inline std::shared_ptr<V_aidl::IMemtrack> get_aidl_instance() {
+    const auto instance =
+            std::string() + V_aidl::IMemtrack::descriptor + "/default";
+    auto memtrackBinder = ndk::SpAIBinder(AServiceManager_getService(instance.c_str()));
+    return V_aidl::IMemtrack::fromBinder(memtrackBinder);
 }
 
 memtrack_proc *memtrack_proc_new(void)
@@ -68,7 +115,27 @@ static int memtrack_proc_get_type(memtrack_proc_type *t,
         pid_t pid, MemtrackType type)
 {
     int err = 0;
-    android::sp<IMemtrack> memtrack = get_instance();
+
+    std::shared_ptr<V_aidl::IMemtrack> service= get_aidl_instance();
+    if (service) {
+        std::vector<V_aidl::MemtrackRecord> records;
+        auto status = service->getMemory(
+                pid, static_cast<V_aidl::MemtrackType>(static_cast<uint32_t>(type)), &records);
+
+        if (!status.isOk()) {
+            return -1;
+        }
+
+        t->records.resize(records.size());
+        for (size_t i = 0; i < records.size(); i++) {
+            t->records[i].sizeInBytes = records[i].sizeInBytes;
+            t->records[i].flags = records[i].flags;
+        }
+
+        return err;
+    }
+
+    android::sp<V1_0::IMemtrack> memtrack = get_hidl_instance();
     if (memtrack == nullptr)
         return -1;
 
