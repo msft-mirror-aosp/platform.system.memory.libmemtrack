@@ -12,14 +12,12 @@ cc_library_shared {
     local_include_dirs: ["include"],
     include_dirs: ["hardware/libhardware/include"],
     shared_libs: [
-        "libbinder_ndk",
         "libhardware",
         "liblog",
         "libbase",
         "libhidlbase",
         "libutils",
         "android.hardware.memtrack@1.0",
-        "android.hardware.memtrack-unstable-ndk_platform",
     ],
     cflags: [
         "-Wall",
