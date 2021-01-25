@@ -104,6 +104,16 @@ static std::shared_ptr<V_aidl::IMemtrack> get_aidl_instance() {
     return V_aidl::IMemtrack::fromBinder(memtrack_binder);
 }
 
+bool memtrack_gpu_device_info(std::vector<V_aidl::DeviceInfo>* device_info) {
+    std::shared_ptr<V_aidl::IMemtrack> service = get_aidl_instance();
+    if (!service) {
+        return false;
+    }
+
+    auto status = service->getGpuDeviceInfo(device_info);
+    return status.isOk();
+}
+
 memtrack_proc *memtrack_proc_new(void)
 {
     return new memtrack_proc();
