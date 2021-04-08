@@ -15,10 +15,12 @@
  */
 #define LOG_TAG "memtrack"
 
+#include <aidl/android/hardware/memtrack/DeviceInfo.h>
 #include <aidl/android/hardware/memtrack/IMemtrack.h>
+#include <aidl/android/hardware/memtrack/MemtrackRecord.h>
 #include <aidl/android/hardware/memtrack/MemtrackType.h>
+
 #include <android/binder_manager.h>
-#include <android/hardware/memtrack/1.0/IMemtrack.h>
 #include <memtrack/memtrack.h>
 
 #include <errno.h>
@@ -29,48 +31,13 @@
 
 #include <log/log.h>
 
-using android::hardware::memtrack::V1_0::IMemtrack;
-using android::hardware::memtrack::V1_0::MemtrackType;
-using android::hardware::memtrack::V1_0::MemtrackRecord;
-using android::hardware::memtrack::V1_0::MemtrackFlag;
-using android::hardware::memtrack::V1_0::MemtrackStatus;
-using android::hardware::hidl_vec;
-using android::hardware::Return;
+using aidl::android::hardware::memtrack::DeviceInfo;
+using aidl::android::hardware::memtrack::IMemtrack;
+using aidl::android::hardware::memtrack::MemtrackRecord;
+using aidl::android::hardware::memtrack::MemtrackType;
 
-namespace V1_0 = android::hardware::memtrack::V1_0;
-namespace V_aidl = aidl::android::hardware::memtrack;
-
-// Check Memtrack Flags
-static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SMAPS_ACCOUNTED) ==
-              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SMAPS_ACCOUNTED));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SMAPS_UNACCOUNTED) ==
-              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SMAPS_UNACCOUNTED));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SHARED) ==
-              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SHARED));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SHARED_PSS) ==
-              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SHARED_PSS));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::PRIVATE) ==
-              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_PRIVATE));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SYSTEM) ==
-              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SYSTEM));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::DEDICATED) ==
-              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_DEDICATED));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::NONSECURE) ==
-              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_NONSECURE));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackFlag::SECURE) ==
-              static_cast<uint32_t>(V_aidl::MemtrackRecord::FLAG_SECURE));
-
-// Check Memtrack Types
-static_assert(static_cast<uint32_t>(V1_0::MemtrackType::OTHER) ==
-              static_cast<uint32_t>(V_aidl::MemtrackType::OTHER));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackType::GL) ==
-              static_cast<uint32_t>(V_aidl::MemtrackType::GL));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackType::GRAPHICS) ==
-              static_cast<uint32_t>(V_aidl::MemtrackType::GRAPHICS));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackType::MULTIMEDIA) ==
-              static_cast<uint32_t>(V_aidl::MemtrackType::MULTIMEDIA));
-static_assert(static_cast<uint32_t>(V1_0::MemtrackType::CAMERA) ==
-              static_cast<uint32_t>(V_aidl::MemtrackType::CAMERA));
+const std::vector<MemtrackType> kMemtrackTypes{ndk::enum_range<MemtrackType>().begin(),
+                                               ndk::enum_range<MemtrackType>().end()};
 
 struct memtrack_proc_type {
     MemtrackType type;
@@ -79,38 +46,31 @@ struct memtrack_proc_type {
 
 struct memtrack_proc {
     pid_t pid;
-    memtrack_proc_type types[static_cast<int>(MemtrackType::NUM_TYPES)];
+    std::vector<memtrack_proc_type> types;
+
+    memtrack_proc() {
+        types.resize(kMemtrackTypes.size());
+    }
 };
 
-//TODO(b/31632518)
-static android::sp<V1_0::IMemtrack> get_hidl_instance() {
-    static android::sp<IMemtrack> module = IMemtrack::getService();
-    static bool logged = false;
-    if (module == nullptr && !logged) {
-        logged = true;
-        ALOGE("Couldn't load memtrack module");
+static std::shared_ptr<IMemtrack> get_memtrack_proxy_service() {
+    const char* kMemtrackProxyService = "memtrack.proxy";
+    static std::shared_ptr<IMemtrack> memtrack_proxy_service = nullptr;
+    if (!memtrack_proxy_service &&
+        !(memtrack_proxy_service = IMemtrack::fromBinder(
+                  ndk::SpAIBinder(AServiceManager_checkService(kMemtrackProxyService))))) {
+        ALOGE("Unable to connect to %s\n", kMemtrackProxyService);
     }
-    return module;
+    return memtrack_proxy_service;
 }
 
-static std::shared_ptr<V_aidl::IMemtrack> get_aidl_instance() {
-    const auto instance = std::string() + V_aidl::IMemtrack::descriptor + "/default";
-    static bool declared = AServiceManager_isDeclared(instance.c_str());
-    if (!declared) {
-        return nullptr;
-    }
-    static ndk::SpAIBinder memtrack_binder =
-            ndk::SpAIBinder(AServiceManager_waitForService(instance.c_str()));
-    return V_aidl::IMemtrack::fromBinder(memtrack_binder);
-}
-
-bool memtrack_gpu_device_info(std::vector<V_aidl::DeviceInfo>* device_info) {
-    std::shared_ptr<V_aidl::IMemtrack> service = get_aidl_instance();
-    if (!service) {
+bool memtrack_gpu_device_info(std::vector<DeviceInfo>* device_info) {
+    std::shared_ptr<IMemtrack> memtrack_proxy_service = get_memtrack_proxy_service();
+    if (!memtrack_proxy_service) {
         return false;
     }
 
-    auto status = service->getGpuDeviceInfo(device_info);
+    auto status = memtrack_proxy_service->getGpuDeviceInfo(device_info);
     return status.isOk();
 }
 
@@ -129,42 +89,25 @@ static int memtrack_proc_get_type(memtrack_proc_type *t,
 {
     int err = 0;
 
-    std::shared_ptr<V_aidl::IMemtrack> service= get_aidl_instance();
-    if (service) {
-        std::vector<V_aidl::MemtrackRecord> records;
-        auto status = service->getMemory(
-                pid, static_cast<V_aidl::MemtrackType>(static_cast<uint32_t>(type)), &records);
-
-        if (!status.isOk()) {
-            return -1;
-        }
-
-        t->records.resize(records.size());
-        for (size_t i = 0; i < records.size(); i++) {
-            t->records[i].sizeInBytes = records[i].sizeInBytes;
-            t->records[i].flags = records[i].flags;
-        }
-
-        return err;
+    std::shared_ptr<IMemtrack> memtrack_proxy_service = get_memtrack_proxy_service();
+    if (!memtrack_proxy_service) {
+        return -1;
     }
 
-    android::sp<V1_0::IMemtrack> memtrack = get_hidl_instance();
-    if (memtrack == nullptr)
-        return -1;
+    std::vector<MemtrackRecord> records;
+    auto status = memtrack_proxy_service->getMemory(pid, type, &records);
 
-    Return<void> ret = memtrack->getMemory(pid, type,
-        [&t, &err](MemtrackStatus status, hidl_vec<MemtrackRecord> records) {
-            if (status != MemtrackStatus::SUCCESS) {
-                err = -1;
-                t->records.resize(0);
-            }
-            t->records.resize(records.size());
-            for (size_t i = 0; i < records.size(); i++) {
-                t->records[i].sizeInBytes = records[i].sizeInBytes;
-                t->records[i].flags = records[i].flags;
-            }
-    });
-    return ret.isOk() ? err : -1;
+    if (!status.isOk()) {
+        return -1;
+    }
+
+    t->records.resize(records.size());
+    for (size_t i = 0; i < records.size(); i++) {
+        t->records[i].sizeInBytes = records[i].sizeInBytes;
+        t->records[i].flags = records[i].flags;
+    }
+
+    return err;
 }
 
 /* TODO: sanity checks on return values from HALs:
@@ -186,8 +129,8 @@ int memtrack_proc_get(memtrack_proc *p, pid_t pid)
     }
 
     p->pid = pid;
-    for (uint32_t i = 0; i < (uint32_t)MemtrackType::NUM_TYPES; i++) {
-        int ret = memtrack_proc_get_type(&p->types[i], pid, (MemtrackType)i);
+    for (int i = 0; i < kMemtrackTypes.size(); i++) {
+        int ret = memtrack_proc_get_type(&p->types[i], pid, kMemtrackTypes[i]);
         if (ret != 0)
            return ret;
     }
@@ -223,7 +166,7 @@ ssize_t memtrack_proc_graphics_pss(memtrack_proc *p)
 {
     std::vector<MemtrackType> types = { MemtrackType::GRAPHICS };
     return memtrack_proc_sum(p, types,
-            (uint32_t)MemtrackFlag::SMAPS_UNACCOUNTED);
+            (uint32_t)MemtrackRecord::FLAG_SMAPS_UNACCOUNTED);
 }
 
 ssize_t memtrack_proc_gl_total(memtrack_proc *p)
@@ -236,7 +179,7 @@ ssize_t memtrack_proc_gl_pss(memtrack_proc *p)
 {
     std::vector<MemtrackType> types = { MemtrackType::GL };
     return memtrack_proc_sum(p, types,
-            (uint32_t)MemtrackFlag::SMAPS_UNACCOUNTED);
+            (uint32_t)MemtrackRecord::FLAG_SMAPS_UNACCOUNTED);
 }
 
 ssize_t memtrack_proc_other_total(memtrack_proc *p)
@@ -251,5 +194,5 @@ ssize_t memtrack_proc_other_pss(memtrack_proc *p)
     std::vector<MemtrackType> types = { MemtrackType::MULTIMEDIA,
             MemtrackType::CAMERA, MemtrackType::OTHER };
     return memtrack_proc_sum(p, types,
-            (uint32_t)MemtrackFlag::SMAPS_UNACCOUNTED);
+            (uint32_t)MemtrackRecord::FLAG_SMAPS_UNACCOUNTED);
 }
