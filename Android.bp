@@ -18,7 +18,6 @@ cc_library_shared {
         "libbase",
         "libhidlbase",
         "libutils",
-        "android.hardware.memtrack@1.0",
         "android.hardware.memtrack-V1-ndk",
     ],
     cflags: [
